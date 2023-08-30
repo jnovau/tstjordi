@@ -1,0 +1,678 @@
+*&---------------------------------------------------------------------*
+*&      Form  PROCESS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM process .
+
+  DATA: lv_folder TYPE string,
+        lv_fname  TYPE string,
+        lv_header TYPE string,
+        lt_vttp   TYPE tt_vttp,
+        lt_likp   TYPE tt_likp,
+        lt_lips   TYPE tt_lips,
+        lt_vepo   TYPE tt_vepo.
+
+  DATA: folder TYPE string.
+
+  PERFORM select_folder CHANGING lv_folder
+                                 lv_fname.
+
+  PERFORM get_data_likp USING    s_wadat[]
+                                 s_vbeln[]
+                                 s_lfart[]
+                        CHANGING lt_likp[]
+                                 lv_header.
+
+  IF NOT p_likp IS INITIAL.
+    PERFORM output USING    'Outbound_Delivery_Header'
+                            lt_likp[]
+                            24
+                            lv_fname
+                            lv_header.
+  ENDIF.
+
+  IF NOT p_vttp IS INITIAL.
+    PERFORM get_data_vttp USING    lt_likp[]
+                          CHANGING lt_vttp[]
+                                   lv_header.
+    PERFORM output USING    'Shipments'
+                            lt_vttp[]
+                            9
+                            lv_fname
+                            lv_header.
+  ENDIF.
+
+  IF NOT p_lips IS INITIAL.
+    PERFORM get_data_lips USING    lt_likp[]
+                          CHANGING lt_lips[]
+                                   lv_header.
+    PERFORM output USING    'Outbound_Delivery_Item'
+                            lt_lips[]
+                            16
+                            lv_fname
+                            lv_header.
+  ENDIF.
+
+  IF NOT p_vepo IS INITIAL.
+    PERFORM get_data_vepo USING    lt_likp[]
+                          CHANGING lt_vepo[]
+                                   lv_header.
+    PERFORM output USING    'Handling_Units'
+                            lt_vepo[]
+                            9
+                            lv_fname
+                            lv_header.
+  ENDIF.
+
+  MESSAGE 'CSV files have been downloaded' TYPE 'S'.
+
+ENDFORM.                    " PROCESS
+
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA_LIKP
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM get_data_likp  USING    pr_wadat_ist TYPE tr_wadat_ist
+                             pr_vbeln     TYPE tr_vbeln
+                             pr_lfart     TYPE tr_lfart
+                    CHANGING pt_likp      TYPE tt_likp
+                             pv_header    TYPE string.
+
+  DATA: lt_kna1  TYPE tt_kna1,
+        ls_kna1  TYPE ts_kna1,
+        lt_tvrot TYPE tt_tvrot,
+        ls_tvrot TYPE ts_tvrot,
+        lt_adrc  TYPE tt_adrc,
+        lt_t001w TYPE tt_t001w,
+        lt_dd07t TYPE tt_dd07t,
+        lt_vbpa  TYPE tt_vbpa,
+        lt_vbss  TYPE tt_vbss.
+
+  FIELD-SYMBOLS: <ls_likp> TYPE ts_likp,
+                 <ls_kna1> TYPE ts_kna1,
+                 <ls_adrc>  TYPE ts_adrc,
+                 <ls_t001w> TYPE ts_t001w,
+                 <ls_dd07t> TYPE ts_dd07t,
+                 <ls_vbpa>  TYPE ts_vbpa,
+                 <ls_vbss>  TYPE ts_vbss.
+
+  CHECK NOT (     pr_wadat_ist[] IS INITIAL
+              AND pr_vbeln[]     IS INITIAL
+              AND pr_lfart[]     IS INITIAL ).
+
+  SELECT vbeln lfart kunag kunnr vkorg route wadat btgew
+         gewei volum voleh anzpk inco1 vstel wadat_ist podat
+    FROM likp
+    INTO CORRESPONDING FIELDS OF TABLE pt_likp
+    WHERE wadat_ist IN pr_wadat_ist
+      AND wadat_ist NE 0
+      AND vbeln     IN pr_vbeln
+      AND lfart     IN pr_lfart.
+
+  CHECK NOT pt_likp[] IS INITIAL.
+
+  LOOP AT pt_likp ASSIGNING <ls_likp>.
+    ls_kna1-kunnr = <ls_likp>-kunnr.
+    COLLECT ls_kna1 INTO lt_kna1.
+    ls_tvrot-route = <ls_likp>-route.
+    COLLECT ls_tvrot INTO lt_tvrot.
+  ENDLOOP.
+
+  SORT lt_kna1 BY kunnr.
+
+  SELECT kunnr
+         adrnr AS addrnumber
+    FROM kna1
+    INTO CORRESPONDING FIELDS OF TABLE lt_kna1
+    FOR ALL ENTRIES IN lt_kna1
+    WHERE kunnr EQ lt_kna1-kunnr.
+
+  IF NOT lt_kna1[] IS INITIAL.
+
+    SORT lt_kna1 BY addrnumber.
+
+    SELECT addrnumber name1 name2 street post_code1 city1 country
+      FROM adrc
+      INTO CORRESPONDING FIELDS OF TABLE lt_adrc
+      FOR ALL ENTRIES IN lt_kna1
+      WHERE addrnumber EQ lt_kna1-addrnumber.
+
+    SORT lt_adrc BY addrnumber.
+
+    LOOP AT lt_kna1 ASSIGNING <ls_kna1>.
+      <ls_kna1>-werks = <ls_kna1>-kunnr.
+      READ TABLE lt_adrc ASSIGNING <ls_adrc> WITH KEY addrnumber = <ls_kna1>-addrnumber BINARY SEARCH.
+      IF sy-subrc IS INITIAL.
+        <ls_kna1>-name1      = <ls_adrc>-name1.
+        <ls_kna1>-name2      = <ls_adrc>-name2.
+        <ls_kna1>-street     = <ls_adrc>-street.
+        <ls_kna1>-post_code1 = <ls_adrc>-post_code1.
+        <ls_kna1>-city1      = <ls_adrc>-city1.
+        <ls_kna1>-country    = <ls_adrc>-country.
+      ENDIF.
+    ENDLOOP.
+
+    SELECT werks vlfkz
+      FROM t001w
+      INTO CORRESPONDING FIELDS OF TABLE lt_t001w
+      FOR ALL ENTRIES IN lt_kna1
+      WHERE werks EQ lt_kna1-werks.
+
+    SELECT domvalue_l ddtext
+      FROM dd07t
+      INTO CORRESPONDING FIELDS OF TABLE lt_dd07t
+      WHERE domname    EQ 'VLFKZ'
+        AND ddlanguage EQ 'E'.
+
+    LOOP AT lt_t001w ASSIGNING <ls_t001w>.
+
+      READ TABLE lt_dd07t ASSIGNING <ls_dd07t> WITH KEY domvalue_l = <ls_t001w>-vlfkz.
+      IF sy-subrc IS INITIAL.
+
+        <ls_t001w>-ddtext = <ls_dd07t>-ddtext.
+
+      ENDIF.
+
+    ENDLOOP.
+
+  ENDIF.
+
+  SORT lt_tvrot BY route.
+
+  SELECT route bezei
+    FROM tvrot
+    INTO CORRESPONDING FIELDS OF TABLE lt_tvrot
+    FOR ALL ENTRIES IN lt_tvrot
+    WHERE spras EQ 'E'
+      AND route EQ lt_tvrot-route.
+
+  SELECT vbeln adrnr
+    FROM vbpa
+    INTO CORRESPONDING FIELDS OF TABLE lt_vbpa
+    FOR ALL ENTRIES IN pt_likp
+    WHERE vbeln EQ pt_likp-vbeln
+      AND posnr EQ 0
+      AND parvw EQ 'WE'.
+
+  IF NOT lt_vbpa[] IS INITIAL.
+    SELECT addrnumber name2
+      FROM adrc
+      INTO CORRESPONDING FIELDS OF TABLE lt_adrc
+      FOR ALL ENTRIES IN lt_vbpa
+      WHERE addrnumber EQ lt_vbpa-adrnr.
+  ENDIF.
+
+  SELECT vbeln sammg
+    FROM vbss
+    INTO CORRESPONDING FIELDS OF TABLE lt_vbss
+    FOR ALL ENTRIES IN pt_likp
+    WHERE vbeln EQ pt_likp-vbeln.
+
+  SORT: lt_kna1  BY kunnr,
+        lt_tvrot BY route,
+        lt_t001w BY werks,
+        lt_vbpa  BY vbeln,
+        lt_adrc  BY addrnumber,
+        lt_vbss  BY vbeln.
+
+  LOOP AT pt_likp ASSIGNING <ls_likp>.
+
+    <ls_likp>-btgew_s  = <ls_likp>-btgew.
+    <ls_likp>-volum_s  = <ls_likp>-volum.
+
+    READ TABLE lt_kna1 INTO ls_kna1 WITH KEY kunnr = <ls_likp>-kunnr BINARY SEARCH.
+    IF sy-subrc IS INITIAL.
+
+      CONCATENATE ls_kna1-name1 ls_kna1-name2
+             INTO <ls_likp>-address SEPARATED BY space.
+      CONCATENATE <ls_likp>-address ls_kna1-street ls_kna1-post_code1 ls_kna1-city1
+             INTO <ls_likp>-address SEPARATED BY ' / '.
+
+      <ls_likp>-country    = ls_kna1-country.
+      <ls_likp>-post_code1 = ls_kna1-post_code1.
+      <ls_likp>-addrnumber = ls_kna1-addrnumber.
+
+    ENDIF.
+
+    READ TABLE lt_tvrot INTO ls_tvrot WITH KEY route = <ls_likp>-route BINARY SEARCH.
+    IF sy-subrc IS INITIAL.
+
+      <ls_likp>-bezei = ls_tvrot-bezei.
+
+    ENDIF.
+
+    READ TABLE lt_t001w ASSIGNING <ls_t001w> WITH KEY werks = <ls_likp>-kunnr BINARY SEARCH.
+    IF sy-subrc IS INITIAL.
+
+      <ls_likp>-vlfkz  = <ls_t001w>-vlfkz.
+      <ls_likp>-ddtext = <ls_t001w>-ddtext.
+
+    ENDIF.
+
+    READ TABLE lt_vbpa ASSIGNING <ls_vbpa> WITH KEY vbeln = <ls_likp>-vbeln BINARY SEARCH.
+    IF sy-subrc IS INITIAL.
+
+      READ TABLE lt_adrc ASSIGNING <ls_adrc> WITH KEY addrnumber = <ls_vbpa>-adrnr BINARY SEARCH.
+      IF sy-subrc IS INITIAL.
+
+        <ls_likp>-name2 = <ls_adrc>-name2.
+
+      ENDIF.
+
+    ENDIF.
+
+    READ TABLE lt_vbss ASSIGNING <ls_vbss> WITH KEY vbeln = <ls_likp>-vbeln BINARY SEARCH.
+    IF sy-subrc IS INITIAL.
+
+      <ls_likp>-sammg = <ls_vbss>-sammg.
+
+    ENDIF.
+
+  ENDLOOP.
+
+  CONCATENATE 'Outbound Delivery'	'Delivery Type'	'Sold-to-party' 'Ship-to-party'
+              'Address'	'Country' 'Postal Code'	'Sales Org.' 'Route' 'Route Desc'
+              'Planned Goods Issue'	'Total Weight' 'Weight Unit' 'Total Volume'
+              'Volume Unit'	'Packages' 'Incoterm' 'Shipping Point' 'Actual Goods Issue'
+              'POD date' 'Plant cat.' 'Plant cat. Desc' 'e-Comm PO nr.' 'Group delivery'
+         INTO pv_header SEPARATED BY ';'.
+
+  SORT pt_likp BY vbeln.
+
+ENDFORM.                    " GET_DATA_LIKP
+
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA_VTTP
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM get_data_vttp  USING    pt_likp   TYPE tt_likp
+                    CHANGING pt_vttp   TYPE tt_vttp
+                             pv_header TYPE string.
+
+  DATA: lt_vttk      TYPE tt_vttk,
+        ls_vttk      TYPE ts_vttk,
+        lt_tvtkt     TYPE tt_tvtkt,
+        ls_tvtkt     TYPE ts_tvtkt,
+        lt_t173t     TYPE tt_t173t,
+        ls_t173t     TYPE ts_t173t,
+        lt_lfa1      TYPE tt_lfa1,
+        ls_lfa1      TYPE ts_lfa1,
+        lv_tknum_prv TYPE vttp-tknum.
+
+  FIELD-SYMBOLS: <ls_vttp> TYPE ts_vttp.
+
+  CHECK NOT pt_likp[] IS INITIAL.
+
+  SELECT vbeln tknum
+    FROM vttp
+    INTO CORRESPONDING FIELDS OF TABLE pt_vttp
+    FOR ALL ENTRIES IN pt_likp
+    WHERE vbeln EQ pt_likp-vbeln.
+
+  CHECK NOT pt_likp[] IS INITIAL.
+
+  LOOP AT pt_vttp ASSIGNING <ls_vttp>.
+    ls_vttk-tknum = <ls_vttp>-tknum.
+    COLLECT ls_vttk INTO lt_vttk.
+  ENDLOOP.
+
+  SORT lt_vttk BY tknum.
+
+  SELECT tknum shtyp vsart tdlnr dtabf
+    FROM vttk
+    INTO CORRESPONDING FIELDS OF TABLE lt_vttk
+    FOR ALL ENTRIES IN lt_vttk
+    WHERE tknum EQ lt_vttk-tknum.
+
+  CHECK NOT lt_vttk[] IS INITIAL.
+
+  LOOP AT lt_vttk INTO ls_vttk.
+    ls_tvtkt-shtyp = ls_vttk-shtyp.
+    COLLECT ls_tvtkt INTO lt_tvtkt.
+    ls_t173t-vsart = ls_vttk-vsart.
+    COLLECT ls_t173t INTO lt_t173t.
+    ls_lfa1-lifnr = ls_vttk-tdlnr.
+    COLLECT ls_lfa1 INTO lt_lfa1.
+  ENDLOOP.
+
+  SELECT shtyp bezei
+    FROM tvtkt
+    INTO CORRESPONDING FIELDS OF TABLE lt_tvtkt
+    FOR ALL ENTRIES IN lt_tvtkt
+    WHERE spras EQ 'E'
+      AND shtyp EQ lt_tvtkt-shtyp.
+
+  SELECT vsart bezei
+    FROM t173t
+    INTO CORRESPONDING FIELDS OF TABLE lt_t173t
+    FOR ALL ENTRIES IN lt_t173t
+    WHERE spras EQ 'E'
+      AND vsart EQ lt_t173t-vsart.
+
+  SELECT lifnr name1
+    FROM lfa1
+    INTO CORRESPONDING FIELDS OF TABLE lt_lfa1
+    FOR ALL ENTRIES IN lt_lfa1
+    WHERE lifnr EQ lt_lfa1-lifnr.
+
+  SORT: pt_vttp  BY tknum,
+        lt_vttk  BY tknum,
+        lt_tvtkt BY shtyp,
+        lt_t173t BY vsart,
+        lt_lfa1  BY lifnr.
+
+  LOOP AT pt_vttp ASSIGNING <ls_vttp>.
+
+    IF    sy-tabix        EQ 1
+       OR <ls_vttp>-tknum NE lv_tknum_prv.
+
+      CLEAR: ls_vttk, ls_tvtkt, ls_t173t, ls_lfa1.
+
+      READ TABLE lt_vttk INTO ls_vttk WITH KEY tknum = <ls_vttp>-tknum BINARY SEARCH.
+
+      IF sy-subrc IS INITIAL.
+        READ TABLE lt_tvtkt INTO ls_tvtkt WITH KEY shtyp = ls_vttk-shtyp BINARY SEARCH.
+        READ TABLE lt_t173t INTO ls_t173t WITH KEY vsart = ls_vttk-vsart BINARY SEARCH.
+        READ TABLE lt_lfa1  INTO ls_lfa1  WITH KEY lifnr = ls_vttk-tdlnr BINARY SEARCH.
+      ENDIF.
+
+      lv_tknum_prv = <ls_vttp>-tknum.
+    ENDIF.
+
+    <ls_vttp>-shtyp       = ls_vttk-shtyp.
+    <ls_vttp>-bezei_shtyp = ls_tvtkt-bezei.
+    <ls_vttp>-vsart       = ls_vttk-vsart.
+    <ls_vttp>-bezei_vsart = ls_t173t-bezei.
+    <ls_vttp>-tdlnr       = ls_vttk-tdlnr.
+    <ls_vttp>-name1       = ls_lfa1-name1.
+    <ls_vttp>-dtabf       = ls_vttk-dtabf.
+
+  ENDLOOP.
+
+  CONCATENATE 'Out. Delivery'	'Shipment' 'Shipment Type' 'Shipment type Desc.' 'Shipping Type'
+              'Shipping type Desc.'	'Carrier'	'Carrier Desc' 'Shipment Completion'
+         INTO pv_header SEPARATED BY ';'.
+
+  SORT pt_vttp BY vbeln tknum.
+
+ENDFORM.                    " GET_DATA_VTTP
+
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA_LIPS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM get_data_lips  USING    lt_likp   TYPE tt_likp
+                    CHANGING pt_lips   TYPE tt_lips
+                             pv_header TYPE string.
+
+  DATA: lt_mara TYPE tt_mara,
+        ls_mara TYPE ts_mara,
+        lt_vbak TYPE tt_vbak,
+        ls_vbak TYPE ts_vbak,
+        lt_vbkd TYPE tt_vbkd,
+        ls_vbkd TYPE ts_vbkd.
+
+  FIELD-SYMBOLS: <ls_lips> TYPE ts_lips,
+                 <ls_likp> TYPE ts_likp.
+
+  CHECK NOT lt_likp[] IS INITIAL.
+
+  SELECT vbeln posnr matnr lfimg werks ntgew volum lgnum vtweg
+         vgbel vgpos charg
+    FROM lips
+    INTO CORRESPONDING FIELDS OF TABLE pt_lips
+    FOR ALL ENTRIES IN lt_likp
+    WHERE vbeln EQ lt_likp-vbeln.
+
+  CHECK NOT pt_lips[] IS INITIAL.
+
+  SORT pt_lips BY vbeln posnr.
+
+  LOOP AT pt_lips ASSIGNING <ls_lips>.
+    ls_mara-matnr = <ls_lips>-matnr.
+    COLLECT ls_mara INTO lt_mara.
+    ls_vbak-vbeln = <ls_lips>-vgbel.
+    COLLECT ls_vbak INTO lt_vbak.
+    AT NEW vbeln.
+      READ TABLE lt_likp ASSIGNING <ls_likp> WITH KEY vbeln = <ls_lips>-vbeln BINARY SEARCH.
+      IF sy-subrc IS INITIAL.
+        IF <ls_likp>-lfart = 'LR'.
+          ls_vbkd-vbeln = <ls_lips>-vgbel.
+          COLLECT ls_vbkd INTO lt_vbkd.
+        ENDIF.
+      ENDIF.
+    ENDAT.
+  ENDLOOP.
+
+  SELECT matnr ean11
+    FROM mara
+    INTO CORRESPONDING FIELDS OF TABLE lt_mara
+    FOR ALL ENTRIES IN lt_mara
+    WHERE matnr EQ lt_mara-matnr.
+
+  SORT lt_mara BY matnr.
+
+  SELECT vbeln bstnk bstdk
+    FROM vbak
+    INTO CORRESPONDING FIELDS OF TABLE lt_vbak
+    FOR ALL ENTRIES IN lt_vbak
+    WHERE vbeln EQ lt_vbak-vbeln.
+
+  SORT lt_vbak BY vbeln.
+
+  SELECT vbeln ihrez
+    FROM vbkd
+    INTO CORRESPONDING FIELDS OF TABLE lt_vbkd
+    FOR ALL ENTRIES IN lt_vbkd
+    WHERE vbeln EQ lt_vbkd-vbeln
+      AND posnr EQ 0.
+
+  SORT lt_vbkd BY vbeln.
+
+  LOOP AT pt_lips ASSIGNING <ls_lips>.
+
+    <ls_lips>-lfimg_s = <ls_lips>-lfimg.
+    <ls_lips>-ntgew_s = <ls_lips>-ntgew.
+    <ls_lips>-volum_s = <ls_lips>-volum.
+
+    READ TABLE lt_mara INTO ls_mara WITH KEY matnr = <ls_lips>-matnr BINARY SEARCH.
+    IF sy-subrc IS INITIAL.
+      <ls_lips>-ean11 = ls_mara-ean11.
+    ENDIF.
+
+    READ TABLE lt_vbak INTO ls_vbak WITH KEY vbeln = <ls_lips>-vgbel BINARY SEARCH.
+    IF sy-subrc IS INITIAL.
+      <ls_lips>-bstnk = ls_vbak-bstnk.
+      <ls_lips>-bstdk = ls_vbak-bstdk.
+    ENDIF.
+
+    READ TABLE lt_vbkd INTO ls_vbkd WITH KEY vbeln = <ls_lips>-vgbel BINARY SEARCH.
+    IF sy-subrc IS INITIAL.
+      <ls_lips>-ihrez = ls_vbkd-ihrez.
+    ENDIF.
+
+  ENDLOOP.
+
+  CONCATENATE 'Outbound Delivery'	'Item' 'Material' 'EAN'	'Delivery quantity'
+              'Plant' 'Unit Weight' 'Unit Volume' 'Warehouse Num.' 'Channel'
+              'Ref. Doc' 'Ref. Item' 'PO Number' 'PO Date' 'Batch'
+              'CRA Reference'
+         INTO pv_header SEPARATED BY ';'.
+
+  SORT pt_lips BY vbeln posnr.
+
+ENDFORM.                    " GET_DATA_LIPS
+
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA_VEPO
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM get_data_vepo  USING    pt_likp   TYPE tt_likp
+                    CHANGING pt_vepo   TYPE tt_vepo
+                             pv_header TYPE string.
+
+  DATA: lt_vekp TYPE tt_vekp,
+        ls_vekp TYPE ts_vekp.
+
+  FIELD-SYMBOLS: <ls_vekp> TYPE ts_vekp,
+                 <ls_vepo> TYPE ts_vepo.
+
+  CHECK NOT pt_likp[] IS INITIAL.
+
+  SORT pt_likp BY vbeln.
+
+  SELECT venum vepos vbeln posnr vemng
+    FROM vepo
+    INTO CORRESPONDING FIELDS OF TABLE pt_vepo
+    FOR ALL ENTRIES IN pt_likp
+    WHERE vbeln EQ pt_likp-vbeln.
+
+  CHECK NOT pt_vepo[] IS INITIAL.
+
+  LOOP AT pt_vepo ASSIGNING <ls_vepo>.
+    ls_vekp-venum = <ls_vepo>-venum.
+    COLLECT ls_vekp INTO lt_vekp.
+  ENDLOOP.
+
+  SORT: lt_vekp BY venum.
+
+  SELECT brgew tarag ntgew exidv vhilm venum exidv2
+    FROM vekp
+    INTO CORRESPONDING FIELDS OF TABLE lt_vekp
+    FOR ALL ENTRIES IN lt_vekp
+    WHERE venum EQ lt_vekp-venum.
+
+  SORT: pt_vepo BY venum,
+        lt_vekp BY venum.
+
+****  LOOP AT lt_vepo ASSIGNING <ls_vepo>.
+****
+****    AT NEW venum.
+****      UNASSIGN <ls_vekp>.
+****      READ TABLE pt_vekp ASSIGNING <ls_vekp> WITH KEY venum = <ls_vepo>-venum BINARY SEARCH.
+****    ENDAT.
+****
+****    IF <ls_vekp> IS ASSIGNED.
+****      <ls_vekp>-vbeln = <ls_vepo>-vbeln.
+****      <ls_vekp>-vemng = <ls_vekp>-vemng + <ls_vepo>-vemng.
+****    ENDIF.
+****
+****  ENDLOOP.
+
+  LOOP AT pt_vepo ASSIGNING <ls_vepo>.
+
+    AT NEW venum.
+      UNASSIGN <ls_vekp>.
+      READ TABLE lt_vekp ASSIGNING <ls_vekp> WITH KEY venum = <ls_vepo>-venum BINARY SEARCH.
+    ENDAT.
+
+    IF <ls_vekp> IS ASSIGNED.
+      <ls_vepo>-exidv  = <ls_vekp>-exidv.
+      <ls_vepo>-vhilm  = <ls_vekp>-vhilm.
+      <ls_vepo>-exidv2 = <ls_vekp>-exidv2.
+      <ls_vepo>-brgew  = <ls_vekp>-brgew.
+      <ls_vepo>-tarag  = <ls_vekp>-tarag.
+      <ls_vepo>-ntgew  = <ls_vekp>-ntgew.
+    ENDIF.
+
+  ENDLOOP.
+
+  LOOP AT pt_vepo ASSIGNING <ls_vepo>.
+    <ls_vepo>-vemng_s = <ls_vepo>-vemng.
+    <ls_vepo>-brgew_s = <ls_vepo>-brgew.
+    <ls_vepo>-tarag_s = <ls_vepo>-tarag.
+    <ls_vepo>-ntgew_s = <ls_vepo>-ntgew.
+  ENDLOOP.
+
+  CONCATENATE 'Delivery' 'Delivery Item' 'Total Units HU'	'Total Weight' 'Tare'
+              'Loading weight' 'Handling Unit' 'Package Type' 'Tracking Nr.'
+         INTO pv_header SEPARATED BY ';'.
+
+  SORT pt_vepo BY vbeln posnr venum.
+
+ENDFORM.                    " GET_DATA_VEPO
+
+*&---------------------------------------------------------------------*
+*&      Form  OUTPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM output  USING    pv_name          TYPE string
+                      pt_table         TYPE ANY TABLE
+                      pv_fields        TYPE i
+                      value(pv_folder) TYPE string
+                      lv_header        TYPE string.
+
+  DATA: ls_table  TYPE REF TO data,
+        lv_fieldn TYPE i,
+        lt_file   TYPE tt_file,
+        ls_file   TYPE ts_file,
+        lv_data   TYPE c LENGTH 500.
+
+  FIELD-SYMBOLS: <ls_table> TYPE ANY,
+                 <lv_value> TYPE ANY.
+
+  ls_file-data = lv_header.
+  APPEND ls_file TO lt_file.
+
+  CREATE DATA ls_table LIKE LINE OF pt_table.
+  ASSIGN ls_table->* TO <ls_table>.
+
+  LOOP AT pt_table INTO <ls_table>.
+
+    CLEAR: lv_fieldn,
+           lv_data.
+
+    DO pv_fields TIMES.
+      lv_fieldn = lv_fieldn + 1.
+      ASSIGN COMPONENT lv_fieldn OF STRUCTURE <ls_table> TO <lv_value>.
+      TRANSLATE <lv_value> USING '; '.
+      CONCATENATE lv_data <lv_value> INTO lv_data SEPARATED BY ';'.
+    ENDDO.
+
+    REPLACE FIRST OCCURRENCE OF ';' IN lv_data WITH ''.
+
+    MOVE lv_data TO ls_file-data.
+    APPEND ls_file TO lt_file.
+
+  ENDLOOP.
+
+  REPLACE FIRST OCCURRENCE OF '[NAME]' IN pv_folder WITH pv_name.
+
+  CALL METHOD cl_gui_frontend_services=>gui_download
+    EXPORTING
+      filename = pv_folder
+    CHANGING
+      data_tab = lt_file
+    EXCEPTIONS
+      OTHERS   = 24.
+
+ENDFORM.                    " OUTPUT
+
+*&---------------------------------------------------------------------*
+*&      Form  SELECT_FOLDER
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM select_folder  CHANGING pv_folder TYPE string
+                             pv_fname  TYPE string.
+
+  CALL METHOD cl_gui_frontend_services=>directory_browse
+    CHANGING
+      selected_folder = pv_folder
+    EXCEPTIONS
+      OTHERS          = 99.
+
+  IF pv_folder IS INITIAL.
+    MESSAGE 'Process cancelled' TYPE 'S' DISPLAY LIKE 'E'.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+
+  CONCATENATE pv_folder '\[NAME]_' sy-datum '_' sy-uzeit '.csv' INTO pv_fname.
+
+ENDFORM.                    " SELECT_FOLDER
